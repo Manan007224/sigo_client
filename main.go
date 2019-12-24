@@ -8,15 +8,23 @@ import (
 	"encoding/json"
 	"bytes"
 	"log"
+	"github.com/emirpasic/gods/sets/hashset"
 )
 
 var server = "localhost:3000"
 
 type Manager struct {
+	pool []*Worker
 	workers int
 	conn *websocket.Conn
 	connectionAlive chan bool
 	lastHeartBeat time.Time
+	busyWorkers *Set
+	freeWorkers *Set
+}
+
+type Worker struct {
+	jobChan chan Job
 }
 
 
@@ -27,20 +35,15 @@ type Job struct {
 }
 
 func NewManager(concurrency int) *Manager {
-	return &Manager {
+	mgr:= &Manager {
+		pool: []*Worker{},
 		workers: concurrency,
 		connectionAlive: make(chan bool),
 		lastHeartBeat: time.Now(),
 	}
-}
 
-func (mgr *Manager) Process() {
-
-	uri := "ws://localhost:3000/cosume"
+	uri := "ws://localhost:3000/consume"
 	conn, _, err := websocket.DefaultDialer.Dial(uri, nil)
-
-	fmt.Println(conn)
-
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -48,6 +51,17 @@ func (mgr *Manager) Process() {
 
 	mgr.conn = conn
 
+	for w := 0; w < mgr.workers; w++ {
+		worker := &Worker {
+			jobChan: make(chan Job)
+		}
+		mgr.pool = append(mgr.pool, worker)
+		freeWorkers.Add(worker)
+	}
+
+}
+
+func (mgr *Manager) Process() {
 	go mgr.heartbeat_server()
 
 	select {
@@ -56,38 +70,42 @@ func (mgr *Manager) Process() {
 	}
 }
 
+func (mgr *Manager) worker_utilization() {
+	fmt.Sprintf("utilization-%s", strconv.Itoa(mgr.busyWorkers) / len(mgr.pool))
+}
+
 
 func (mgr *Manager) heartbeat_server() {
-	defer mgr.conn.Close()
+	for {
+		latestHeartBeat := time.Now()
 
-	latestHeartBeat := time.Now()
-	if int(latestHeartBeat.Sub(mgr.lastHeartBeat))/1000000000 > 60 {
-		mgr.connectionAlive <- true
-		return
+		if int(latestHeartBeat.Sub(mgr.lastHeartBeat))/1000000000 > 3 {
+			mgr.connectionAlive <- true
+			return
+		}
+
+		err := mgr.conn.WriteMessage(websocket.TextMessage, []byte(worker_utilization()))
+		if err != nil {
+			log.Println("Write Error", err)
+			return
+		}
+
+		msgType, bytes, err := mgr.conn.ReadMessage()
+		if err != nil {
+			log.Println("WebSocket closed.")
+			return
+		}
+
+		if msg := string(bytes[:]); msgType != websocket.TextMessage && msg != "ack" {
+			log.Println("Unrecognized message received.")
+			return
+		} else {
+			mgr.lastHeartBeat = time.Now()
+			log.Println("Received: ack.")
+		}
+
+		time.Sleep(3 * time.Second)
 	}
-
-	err := mgr.conn.WriteMessage(websocket.TextMessage, []byte("utilization-50"))
-	if err != nil {
-		log.Println("Write Error", err)
-		return
-	}
-
-	msgType, bytes, err := mgr.conn.ReadMessage()
-	if err != nil {
-		log.Println("WebSocket closed.")
-		return
-	}
-
-	if msg := string(bytes[:]); msgType != websocket.TextMessage && msg != "ack" {
-		log.Println("Unrecognized message received.")
-		return
-	} else {
-		mgr.lastHeartBeat = time.Now()
-		log.Println("Received: ack.")
-	}
-
-	time.Sleep(60 * time.Second)
-
 }
 
 
