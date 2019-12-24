@@ -8,24 +8,17 @@ import (
 	"encoding/json"
 	"bytes"
 	"log"
-	uuid "github.com/google/uuid"
 )
 
 var server = "localhost:3000"
 
 type Manager struct {
-	workers map[uuid.UUID]*Worker
-	concurrency int
-	aliveWorkers uint32
-	deadWorkerChan chan *Worker
+	workers int
+	conn *websocket.Conn
+	connectionAlive chan bool
+	lastHeartBeat time.Time
 }
 
-type Worker struct {
-	conn *websocket.Conn
-	pid uuid.UUID
-	lastHeartBeat time.Time
-	deadWorkerChan chan *Worker
-}
 
 type Job struct {
 	Jid string
@@ -35,70 +28,62 @@ type Job struct {
 
 func NewManager(concurrency int) *Manager {
 	return &Manager {
-		workers: make(map[uuid.UUID]*Worker),
-		concurrency: concurrency,
-		deadWorkerChan: make(chan *Worker),
+		workers: concurrency,
+		connectionAlive: make(chan bool),
+		lastHeartBeat: time.Now(),
 	}
 }
 
 func (mgr *Manager) Process() {
-	for w := 0; w < mgr.concurrency; w++ {
-		worker := &Worker {
-			pid: uuid.New(),
-			deadWorkerChan: mgr.deadWorkerChan,
-		}
 
-		uri := fmt.Sprintf("ws://%s/cosume?pid=%s", server, worker.pid)
-		conn, _, err := websocket.DefaultDialer.Dial(uri, make(http.Header))
+	uri := "ws://localhost:3000/cosume"
+	conn, _, err := websocket.DefaultDialer.Dial(uri, nil)
 
-		if err != nil {
-			fmt.Println("error in establishing websocket connection to the server")
-			fmt.Println(err)
-			continue
-		}
-		worker.conn = conn
-		mgr.workers[worker.pid] = worker
-		worker.Run()
-	}
-}
+	fmt.Println(conn)
 
-func (w *Worker) Run() {
-	// continously pulling jobs from the master
-	go w.heartbeat_server()
-
-	// select {
-	// case <-deadWorkerChan:
-	// 	// handle client_worker_close connection here
-	// }
-}
-
-func (w *Worker) heartbeat_server() {
-	defer w.conn.Close()
-
-	latestHeartBeat := time.Now()
-	if int(latestHeartBeat.Sub(w.lastHeartBeat))/1000000000 > 60 {
-		w.deadWorkerChan <- w
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
 
-	err := w.conn.WriteMessage(websocket.TextMessage, []byte("ping"))
+	mgr.conn = conn
+
+	go mgr.heartbeat_server()
+
+	select {
+	case <-mgr.connectionAlive:
+		fmt.Println("worker is dead")
+	}
+}
+
+
+func (mgr *Manager) heartbeat_server() {
+	defer mgr.conn.Close()
+
+	latestHeartBeat := time.Now()
+	if int(latestHeartBeat.Sub(mgr.lastHeartBeat))/1000000000 > 60 {
+		mgr.connectionAlive <- true
+		return
+	}
+
+	err := mgr.conn.WriteMessage(websocket.TextMessage, []byte("utilization-50"))
 	if err != nil {
 		log.Println("Write Error", err)
 		return
 	}
 
-	msgType, bytes, err := w.conn.ReadMessage()
+	msgType, bytes, err := mgr.conn.ReadMessage()
 	if err != nil {
 		log.Println("WebSocket closed.")
 		return
 	}
 
-	if msg := string(bytes[:]); msgType != websocket.TextMessage && msg != "pong" {
+	if msg := string(bytes[:]); msgType != websocket.TextMessage && msg != "ack" {
 		log.Println("Unrecognized message received.")
 		return
 	} else {
-		w.lastHeartBeat = time.Now()
-		log.Println("Received: pong.")
+		mgr.lastHeartBeat = time.Now()
+		log.Println("Received: ack.")
 	}
 
 	time.Sleep(60 * time.Second)
