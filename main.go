@@ -104,7 +104,6 @@ func (mgr *Manager) heartbeat_server() {
 			return
 		} else {
 			mgr.lastHeartBeat = time.Now()
-			log.Println("Received: ack.")
 		}
 
 		time.Sleep(3 * time.Second)
