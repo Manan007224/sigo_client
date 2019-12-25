@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"log"
 	"github.com/emirpasic/gods/sets/hashset"
+	"strconv"
 )
 
 var server = "localhost:3000"
@@ -19,8 +20,8 @@ type Manager struct {
 	conn *websocket.Conn
 	connectionAlive chan bool
 	lastHeartBeat time.Time
-	busyWorkers *Set
-	freeWorkers *Set
+	busyWorkers *hashset.Set
+	freeWorkers *hashset.Set
 }
 
 type Worker struct {
@@ -31,34 +32,36 @@ type Worker struct {
 type Job struct {
 	Jid string
 	Name string
-	Args []interface{}
+	Args map[string]interface{}
+	Queue string
 }
 
-func NewManager(concurrency int) *Manager {
+func NewManager(concurrency int) (*Manager, error) {
 	mgr:= &Manager {
 		pool: []*Worker{},
 		workers: concurrency,
 		connectionAlive: make(chan bool),
 		lastHeartBeat: time.Now(),
+		freeWorkers: hashset.New(),
+		busyWorkers: hashset.New(),
 	}
 
 	uri := "ws://localhost:3000/consume"
 	conn, _, err := websocket.DefaultDialer.Dial(uri, nil)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return nil, fmt.Errorf("error in connectiing to the server: %s", err)
 	}
 
 	mgr.conn = conn
 
 	for w := 0; w < mgr.workers; w++ {
 		worker := &Worker {
-			jobChan: make(chan Job)
+			jobChan: make(chan Job),
 		}
 		mgr.pool = append(mgr.pool, worker)
-		freeWorkers.Add(worker)
+		mgr.freeWorkers.Add(worker)
 	}
-
+	return mgr, nil
 }
 
 func (mgr *Manager) Process() {
@@ -70,8 +73,8 @@ func (mgr *Manager) Process() {
 	}
 }
 
-func (mgr *Manager) worker_utilization() {
-	fmt.Sprintf("utilization-%s", strconv.Itoa(mgr.busyWorkers) / len(mgr.pool))
+func (mgr *Manager) worker_utilization() string {
+	return fmt.Sprintf("utilization-%s", strconv.Itoa(mgr.busyWorkers.Size() / len(mgr.pool)))
 }
 
 
@@ -84,7 +87,7 @@ func (mgr *Manager) heartbeat_server() {
 			return
 		}
 
-		err := mgr.conn.WriteMessage(websocket.TextMessage, []byte(worker_utilization()))
+		err := mgr.conn.WriteMessage(websocket.TextMessage, []byte(mgr.worker_utilization()))
 		if err != nil {
 			log.Println("Write Error", err)
 			return
@@ -125,6 +128,21 @@ func publish(job *Job) {
 }
 
 func main() {
-	mgr := NewManager(5)
+	mgr, err := NewManager(5)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	job := &Job {
+		Name: "Add",
+		Jid: "123",
+		Args: map[string]interface{}{
+			"Length": 10,
+			"Width": 10,
+		},
+		Queue: "Normal",
+	}
+	publish(job)
 	mgr.Process()
 }
