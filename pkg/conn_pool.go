@@ -39,26 +39,23 @@ func (cp *ConnPool) Get() (*grpc.ClientConn, error) {
 			return nil, closedPool
 		}
 		return conn, nil
-	case <-cp.usedConns:
+	case <-timeout.C:
+		timeout.Reset(time.Millisecond)
 		select {
-		case <-timeout.C:
-			select {
-			// Again try to get a connection from the free ones.
-			case conn, ok := <-cp.freeConns:
-				if !ok {
-					return nil, closedPool
-				}
-				return conn, nil
+		case conn, ok := <-cp.freeConns:
+			if !ok {
+				return nil, closedPool
 			}
-		default:
-			// Build up a new connection
+			return conn, nil
+		case cp.usedConns <- struct{}{}:
 			conn, err := grpc.Dial(addr)
 			if err != nil {
-				// release the used spot
-				cp.usedConns <- struct{}{}
+				<-cp.usedConns
 				return nil, errors.Wrap(err, "failed to create grpc client conn")
 			}
 			return conn, nil
 		}
+	case <-timeout.C:
+		return nil, timeOutError
 	}
 }
