@@ -1,1 +1,1 @@
-# sigo_worker
+# sigo_client
