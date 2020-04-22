@@ -3,6 +3,8 @@ module github.com/Manan007224/sigo_client
 go 1.14
 
 require (
-	google.golang.org/grpc v1.28.1 // indirect
+	github.com/onsi/ginkgo v1.12.0
+	github.com/onsi/gomega v1.9.0
 	github.com/pkg/errors v0.9.1
+	google.golang.org/grpc v1.28.1
 )

@@ -1,6 +1,7 @@
-package client
+package pool
 
 import (
+	"log"
 	"time"
 
 	"github.com/pkg/errors"
@@ -15,14 +16,32 @@ var (
 
 // Most of the ideas and code taken from this blog - http://dustin.sallings.org/2014/04/25/chan-pool.html
 type ConnPool struct {
-	freeConns chan *grpc.ClientConn
-	usedConns chan struct{}
+	FreeConns     chan *grpc.ClientConn
+	UsedConns     chan struct{}
+	CreateHandler func() (*grpc.ClientConn, error)
+	CloseHandler  func(conn *grpc.ClientConn)
 }
 
 func NewConnPool(poolSize int, poolOverflow int) *ConnPool {
 	return &ConnPool{
-		freeConns: make(chan *grpc.ClientConn, poolSize),
-		usedConns: make(chan struct{}, poolSize+poolOverflow),
+		FreeConns:     make(chan *grpc.ClientConn, poolSize),
+		UsedConns:     make(chan struct{}, poolOverflow),
+		CreateHandler: createClientConn,
+		CloseHandler:  closeClientConn,
+	}
+}
+
+func createClientConn() (*grpc.ClientConn, error) {
+	conn, err := grpc.Dial(addr)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create grpc client conn")
+	}
+	return conn, err
+}
+
+func closeClientConn(conn *grpc.ClientConn) {
+	if err := conn.Close(); err != nil {
+		log.Printf("Error in closing client conn: %v", err)
 	}
 }
 
@@ -35,7 +54,7 @@ func (cp *ConnPool) Get() (*grpc.ClientConn, error) {
 	defer timeout.Stop()
 
 	select {
-	case conn, ok := <-cp.freeConns:
+	case conn, ok := <-cp.FreeConns:
 		if !ok {
 			return nil, closedPool
 		}
@@ -43,16 +62,16 @@ func (cp *ConnPool) Get() (*grpc.ClientConn, error) {
 	case <-timeout.C:
 		timeout.Reset(time.Millisecond)
 		select {
-		case conn, ok := <-cp.freeConns:
+		case conn, ok := <-cp.FreeConns:
 			if !ok {
 				return nil, closedPool
 			}
 			return conn, nil
-		case cp.usedConns <- struct{}{}:
-			conn, err := grpc.Dial(addr)
+		case cp.UsedConns <- struct{}{}:
+			conn, err := cp.CreateHandler()
 			if err != nil {
-				<-cp.usedConns
-				return nil, errors.Wrap(err, "failed to create grpc client conn")
+				<-cp.UsedConns
+				return nil, err
 			}
 			return conn, nil
 		case <-timeout.C:
@@ -69,10 +88,10 @@ func (cp *ConnPool) Return(conn *grpc.ClientConn) {
 	}()
 
 	select {
-	case cp.freeConns <- conn:
+	case cp.FreeConns <- conn:
 	default:
-		<-cp.usedConns
-		conn.Close()
+		<-cp.UsedConns
+		cp.CloseHandler(conn)
 	}
 }
 
@@ -80,8 +99,8 @@ func (cp *ConnPool) Close() (err error) {
 	defer func() {
 		err, _ = recover().(error)
 	}()
-	close(cp.freeConns)
-	for conn := range cp.freeConns {
+	close(cp.FreeConns)
+	for conn := range cp.FreeConns {
 		conn.Close()
 	}
 	return
