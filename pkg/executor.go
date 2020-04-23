@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/gob"
+	"fmt"
 	"reflect"
 	"runtime"
 	"time"
@@ -15,16 +16,11 @@ var (
 	errorInterface      = reflect.TypeOf((*error)(nil)).Elem()
 )
 
-type Job struct {
-	fn   interface{}
-	args interface{}
-}
-
-type Registry struct {
+type Executor struct {
 	store map[string]*Job
 }
 
-func (r *Registry) Register(fn interface{}, args interface{}) {
+func (r *Executor) Register(fn interface{}, args interface{}) {
 	if args != nil {
 		gob.Register(args)
 	}
@@ -34,15 +30,15 @@ func (r *Registry) Register(fn interface{}, args interface{}) {
 	}
 }
 
-func (r *Registry) Perform(fn string, args interface{}, deadline int) error {
+func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int) (error, *JobErr) {
 	timeout := time.NewTimer(time.Duration(deadline) * time.Second)
 	select {
 	case <-timeout.C:
-		return timeoutError
+		return timeoutError, nil
 	default:
 		if args != nil {
 			if reflect.TypeOf(args) != reflect.TypeOf(r.store[fn].args) {
-				return argsMismatchTypeErr
+				return argsMismatchTypeErr, nil
 			}
 		}
 		registeredFn := reflect.ValueOf(r.store[fn].fn)
@@ -50,9 +46,18 @@ func (r *Registry) Perform(fn string, args interface{}, deadline int) error {
 		resultErr := result[0].Type()
 
 		if resultErr.Implements(errorInterface) {
-			resultErrInterface := result[0].Interface()
-			return errors.Wrap(resultErrInterface.(error), resultErrInterface.(error).Error())
+			return nil, r.buildJobErr(result[0].Interface().(error), fn, limit)
 		}
-		return nil
+		return nil, nil
+	}
+}
+
+func (r *Executor) buildJobErr(err error, fn string, limit int) *JobErr {
+	cerr := errors.Cause(err).(stackTracer)
+	sterr := cerr.StackTrace()
+	return &JobErr{
+		msg:       err.Error(),
+		typ:       fmt.Sprintf("%sErr", fn),
+		backtrace: fmt.Sprintf("%+v", sterr[0:limit]),
 	}
 }
