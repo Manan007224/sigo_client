@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/ztrue/tracerr"
 )
 
 var (
@@ -53,11 +54,17 @@ func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int)
 }
 
 func (r *Executor) buildJobErr(err error, fn string, limit int) *JobErr {
-	cerr := errors.Cause(err).(stackTracer)
-	sterr := cerr.StackTrace()
+	frames := tracerr.StackTrace(err)
+	if len(frames) >= limit {
+		frames = frames[0:limit]
+	}
+	backtrace := []string{}
+	for _, frame := range frames {
+		backtrace = append(backtrace, frame.String())
+	}
 	return &JobErr{
 		msg:       err.Error(),
 		typ:       fmt.Sprintf("%sErr", fn),
-		backtrace: fmt.Sprintf("%+v", sterr[0:limit]),
+		backtrace: backtrace,
 	}
 }

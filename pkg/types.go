@@ -10,7 +10,7 @@ type Job struct {
 type JobErr struct {
 	msg       string
 	typ       string
-	backtrace string
+	backtrace []string
 }
 
 type stackTracer interface {
