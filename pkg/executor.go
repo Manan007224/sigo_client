@@ -4,7 +4,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"reflect"
-	"runtime"
 	"time"
 
 	"github.com/pkg/errors"
@@ -13,6 +12,7 @@ import (
 
 var (
 	argsMismatchTypeErr = errors.New("arguments mistmatch")
+	funcNotRegistered   = errors.New("function not registered")
 	timeoutError        = errors.New("job execution timeout")
 	errorInterface      = reflect.TypeOf((*error)(nil)).Elem()
 )
@@ -21,14 +21,21 @@ type Executor struct {
 	store map[string]*Job
 }
 
-func (r *Executor) Register(fn interface{}, args interface{}) {
+func NewExecutor() *Executor {
+	return &Executor{
+		store: make(map[string]*Job),
+	}
+}
+
+func (r *Executor) Register(fn interface{}, fnName string, args interface{}) {
 	if args != nil {
 		gob.Register(args)
 	}
-	r.store[runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()] = &Job{
+	r.store[fnName] = &Job{
 		fn:   fn,
 		args: reflect.TypeOf(args),
 	}
+	fmt.Println(r.store)
 }
 
 func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int) (error, *JobErr) {
@@ -37,13 +44,16 @@ func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int)
 	case <-timeout.C:
 		return timeoutError, nil
 	default:
+		if _, ok := r.store[fn]; !ok {
+			return funcNotRegistered, nil
+		}
 		if args != nil {
-			if reflect.TypeOf(args) != reflect.TypeOf(r.store[fn].args) {
+			if reflect.TypeOf(args) != r.store[fn].args {
 				return argsMismatchTypeErr, nil
 			}
 		}
 		registeredFn := reflect.ValueOf(r.store[fn].fn)
-		result := registeredFn.Call([]reflect.Value{reflect.ValueOf(r.store[fn].args)})
+		result := registeredFn.Call([]reflect.Value{reflect.ValueOf(args)})
 		resultErr := result[0].Type()
 
 		if resultErr.Implements(errorInterface) {
