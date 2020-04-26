@@ -1,16 +1,20 @@
 package client
 
-import "github.com/pkg/errors"
+import (
+	"reflect"
+
+	"github.com/pkg/errors"
+)
 
 type Job struct {
 	fn   interface{}
-	args interface{}
+	args reflect.Type
 }
 
 type JobErr struct {
-	msg       string
-	typ       string
-	backtrace []string
+	Msg       string
+	Typ       string
+	Backtrace []string
 }
 
 type stackTracer interface {

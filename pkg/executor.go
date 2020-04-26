@@ -38,10 +38,11 @@ func (r *Executor) Register(fn interface{}, fnName string, args interface{}) {
 	fmt.Println(r.store)
 }
 
-func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int) (error, *JobErr) {
+func (r *Executor) Perform(fn string, args interface{}, deadline int64, limit int) (error, *JobErr) {
 	timeout := time.NewTimer(time.Duration(deadline) * time.Second)
 	select {
 	case <-timeout.C:
+		timeout.Stop()
 		return timeoutError, nil
 	default:
 		if _, ok := r.store[fn]; !ok {
@@ -63,6 +64,13 @@ func (r *Executor) Perform(fn string, args interface{}, deadline int, limit int)
 	}
 }
 
+func (r *Executor) GetArgType(fn string) (reflect.Type, error) {
+	if _, ok := r.store[fn]; ok {
+		return nil, funcNotRegistered
+	}
+	return r.store[fn].args, nil
+}
+
 func (r *Executor) buildJobErr(err error, fn string, limit int) *JobErr {
 	frames := tracerr.StackTrace(err)
 	if len(frames) >= limit {
@@ -73,8 +81,8 @@ func (r *Executor) buildJobErr(err error, fn string, limit int) *JobErr {
 		backtrace = append(backtrace, frame.String())
 	}
 	return &JobErr{
-		msg:       err.Error(),
-		typ:       fmt.Sprintf("%sErr", fn),
-		backtrace: backtrace,
+		Msg:       err.Error(),
+		Typ:       fmt.Sprintf("%sErr", fn),
+		Backtrace: backtrace,
 	}
 }
