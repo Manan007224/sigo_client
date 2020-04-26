@@ -64,6 +64,11 @@ func (r *Executor) Perform(fn string, args interface{}, deadline int64, limit in
 	}
 }
 
+func (r *Executor) Validate(fn string) bool {
+	_, ok := r.store[fn]
+	return ok
+}
+
 func (r *Executor) GetArgType(fn string) (reflect.Type, error) {
 	if _, ok := r.store[fn]; ok {
 		return nil, funcNotRegistered

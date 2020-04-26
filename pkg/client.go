@@ -5,25 +5,174 @@ import (
 	"context"
 	"encoding/gob"
 	"log"
+	"os"
+	"os/signal"
 	"reflect"
 	"sync"
+	"syscall"
+	"time"
+
+	"github.com/Manan007224/sigo_client/pkg/pool"
 
 	pb "github.com/Manan007224/sigo/pkg/proto"
-	"github.com/Manan007224/sigo_client/pkg/pool"
 	"github.com/pkg/errors"
+	uuid "github.com/satori/go.uuid"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var (
 	grpcConnUnavailable = errors.New("grpc client conn not avaliable")
+	queueChoices        = []Choice{
+		{Item: "High", Weight: 4},
+		{Item: "Medium", Weight: 2},
+		{Item: "Low", Weight: 1},
+	}
 )
 
 type Client struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	workerWg    *sync.WaitGroup
-	Concurrency int
-	executor    *Executor
-	pool        *pool.ConnPool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	workerWg     *sync.WaitGroup
+	hearbeatWg   *sync.WaitGroup
+	disconnected chan struct{}
+	jobs         chan *pb.JobPayload
+	Concurrency  int
+	executor     *Executor
+	pool         *pool.ConnPool
+	queuePicker  *Chooser
+}
+
+func NewClient(concurrency int) *Client {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Client{
+		ctx:         ctx,
+		cancel:      cancel,
+		workerWg:    &sync.WaitGroup{},
+		hearbeatWg:  &sync.WaitGroup{},
+		Concurrency: concurrency,
+		executor:    NewExecutor(),
+		pool:        pool.NewConnPool(concurrency, concurrency),
+		queuePicker: NewChooser([]Choice{}),
+	}
+}
+
+func (c *Client) Run() {
+	config := &pb.ClientConfig{
+		Id: "123",
+		// TODO - use guid package to generate unique id's
+		Type: "golang",
+	}
+	for _, qc := range queueChoices {
+		c.queuePicker.AddChoice(qc)
+		config.Queues = append(config.Queues, &pb.QueueConfig{
+			Name:     qc.Item.(string),
+			Priority: int32(qc.Weight),
+		})
+	}
+
+	if _, err := c.Query("discover", config); err != nil {
+		log.Printf("error in discover client %v", err)
+		return
+	}
+
+	go c.hearbeat()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-c.disconnected:
+		c.gracefullShutdown()
+		return
+	case <-sigs:
+		c.gracefullShutdown()
+		return
+	}
+}
+
+func (c *Client) Perform(params *JobParams) error {
+	if !c.executor.Validate(params.Fn) {
+		return funcNotRegistered
+	}
+
+	b := new(bytes.Buffer)
+	defer b.Reset()
+	if err := gob.NewEncoder(b).Encode(params.Args); err != nil {
+		return err
+	}
+
+	jobPayload := &pb.JobPayload{
+		Name:       params.Fn,
+		Args:       b.Bytes(),
+		ReserveFor: params.ReserveFor,
+		Retry:      params.Retry,
+		Jid:        uuid.NewV4().String(),
+	}
+	if params.EnqueueIn != 0 {
+		jobPayload.EnqueueAt = time.Now().Add(time.Duration(params.EnqueueIn)).Unix()
+	}
+	if _, err := c.Query("broadcast", jobPayload); err != nil {
+		log.Printf("error in broadcasting job: %v", err)
+		return err
+	}
+	return nil
+}
+
+func (c *Client) gracefullShutdown() {
+	c.cancel()
+	c.hearbeatWg.Wait()
+	c.workerWg.Wait()
+	c.pool.Close()
+}
+
+func (c *Client) hearbeat() {
+	c.hearbeatWg.Add(1)
+	ticker := time.NewTicker(10)
+	firstRun := false
+	for {
+		select {
+		case <-c.ctx.Done():
+			ticker.Stop()
+			c.hearbeatWg.Done()
+			return
+		case <-ticker.C:
+			if _, err := c.Query("beat", &emptypb.Empty{}); err != nil {
+				log.Printf("error in heartbeat %v", err)
+				if firstRun {
+					c.disconnected <- struct{}{}
+					return
+				} else {
+					firstRun = false
+				}
+			}
+		}
+	}
+}
+
+func (c *Client) Query(rpc string, args interface{}) (interface{}, error) {
+	conn, err := c.pool.Get()
+	if err != nil {
+		return nil, grpcConnUnavailable
+	}
+	defer c.pool.Return(conn)
+	schedulerClient := pb.NewSchedulerClient(conn)
+
+	ctx := context.Background()
+
+	switch rpc {
+	case "fail":
+		return schedulerClient.Fail(ctx, args.(*pb.FailPayload))
+	case "acknowledge":
+		return schedulerClient.Acknowledge(ctx, args.(*pb.JobPayload))
+	case "fetch":
+		return schedulerClient.Fetch(ctx, args.(*pb.Queue))
+	case "discover":
+		return schedulerClient.Discover(ctx, args.(*pb.ClientConfig))
+	case "beat":
+		return schedulerClient.HeartBeat(ctx, args.(*emptypb.Empty))
+	default:
+		return schedulerClient.BroadCast(ctx, args.(*pb.JobPayload))
+	}
 }
 
 type Worker struct {
@@ -46,7 +195,8 @@ func (w *Worker) work() {
 		}
 
 		// fetch job and process it
-		job, err := w.Fetch("high")
+		payload, err := w.client.Query("fetch", w.client.queuePicker.Pick().(string))
+		job := payload.(*pb.JobPayload)
 		if err != nil {
 			log.Printf("error in fetching job: %v", err)
 			continue
@@ -81,47 +231,15 @@ func (w *Worker) work() {
 		}
 
 		if failPayload != nil {
-			if err = w.Fail(failPayload); err != nil {
+			if _, err = w.client.Query("fail", failPayload); err != nil {
 				log.Printf("error in failing job: %v", err)
 				continue
 			}
 		}
 
 		// send ACK message
-		if err = w.Acknowledge(job); err != nil {
+		if _, err = w.client.Query("acknowledge", job); err != nil {
 			log.Printf("error in acking job: %v", err)
 		}
 	}
-}
-
-func (w *Worker) Fetch(queue string) (*pb.JobPayload, error) {
-	conn, err := w.client.pool.Get()
-	if err != nil {
-		return nil, grpcConnUnavailable
-	}
-	defer w.client.pool.Return(conn)
-	sc := pb.NewSchedulerClient(conn)
-	return sc.Fetch(context.Background(), &pb.Queue{Name: queue})
-}
-
-func (w *Worker) Fail(payload *pb.FailPayload) error {
-	conn, err := w.client.pool.Get()
-	if err != nil {
-		return grpcConnUnavailable
-	}
-	defer w.client.pool.Return(conn)
-	sc := pb.NewSchedulerClient(conn)
-	_, err = sc.Fail(context.Background(), payload)
-	return err
-}
-
-func (w *Worker) Acknowledge(payload *pb.JobPayload) error {
-	conn, err := w.client.pool.Get()
-	if err != nil {
-		return grpcConnUnavailable
-	}
-	defer w.client.pool.Return(conn)
-	sc := pb.NewSchedulerClient(conn)
-	_, err = sc.Acknowledge(context.Background(), payload)
-	return err
 }

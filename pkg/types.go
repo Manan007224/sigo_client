@@ -17,6 +17,14 @@ type JobErr struct {
 	Backtrace []string
 }
 
+type JobParams struct {
+	Fn         string
+	Args       interface{}
+	Retry      int32
+	EnqueueIn  int64
+	ReserveFor int64
+}
+
 type stackTracer interface {
 	StackTrace() errors.StackTrace
 }
