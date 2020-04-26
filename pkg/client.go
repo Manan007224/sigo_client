@@ -77,6 +77,11 @@ func (c *Client) Run() {
 
 	go c.heartbeat()
 
+	for i := 0; i < c.Concurrency; i++ {
+		worker := NewWorker(c.ctx, c)
+		go worker.work()
+	}
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
