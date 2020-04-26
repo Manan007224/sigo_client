@@ -33,7 +33,7 @@ type Client struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	workerWg     *sync.WaitGroup
-	hearbeatWg   *sync.WaitGroup
+	heartbeatWg  *sync.WaitGroup
 	disconnected chan struct{}
 	jobs         chan *pb.JobPayload
 	Concurrency  int
@@ -48,7 +48,7 @@ func NewClient(concurrency int) *Client {
 		ctx:         ctx,
 		cancel:      cancel,
 		workerWg:    &sync.WaitGroup{},
-		hearbeatWg:  &sync.WaitGroup{},
+		heartbeatWg: &sync.WaitGroup{},
 		Concurrency: concurrency,
 		executor:    NewExecutor(),
 		pool:        pool.NewConnPool(concurrency, concurrency),
@@ -75,7 +75,7 @@ func (c *Client) Run() {
 		return
 	}
 
-	go c.hearbeat()
+	go c.heartbeat()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -120,20 +120,20 @@ func (c *Client) Perform(params *JobParams) error {
 
 func (c *Client) gracefullShutdown() {
 	c.cancel()
-	c.hearbeatWg.Wait()
+	c.heartbeatWg.Wait()
 	c.workerWg.Wait()
 	c.pool.Close()
 }
 
-func (c *Client) hearbeat() {
-	c.hearbeatWg.Add(1)
+func (c *Client) heartbeat() {
+	c.heartbeatWg.Add(1)
 	ticker := time.NewTicker(10)
 	firstRun := false
 	for {
 		select {
 		case <-c.ctx.Done():
 			ticker.Stop()
-			c.hearbeatWg.Done()
+			c.heartbeatWg.Done()
 			return
 		case <-ticker.C:
 			if _, err := c.Query("beat", &emptypb.Empty{}); err != nil {
@@ -142,7 +142,7 @@ func (c *Client) hearbeat() {
 					c.disconnected <- struct{}{}
 					return
 				} else {
-					firstRun = false
+					firstRun = true
 				}
 			}
 		}
