@@ -23,7 +23,7 @@ type Client struct {
 	workerWg    *sync.WaitGroup
 	Concurrency int
 	executor    *Executor
-	pool        pool.ConnPool
+	pool        *pool.ConnPool
 }
 
 type Worker struct {
