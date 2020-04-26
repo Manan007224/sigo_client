@@ -209,7 +209,7 @@ func (w *Worker) work() {
 
 		argType, err := w.client.executor.GetArgType(job.Name)
 		if err != nil {
-			log.Printf("func not registered %v", err)
+			log.Printf("invalid args %v", err)
 			continue
 		}
 		args := reflect.New(argType).Interface()
