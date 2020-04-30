@@ -4,6 +4,7 @@ go 1.14
 
 require (
 	github.com/Manan007224/sigo v0.0.0-20200425111107-1a8ef21e1cc0
+	github.com/golang/mock v1.4.3 // indirect
 	github.com/onsi/ginkgo v1.12.0
 	github.com/onsi/gomega v1.9.0
 	github.com/pkg/errors v0.9.1
